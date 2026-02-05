@@ -1,0 +1,123 @@
+import Link from "next/link";
+
+export default function HomePage() {
+  return (
+    <main style={styles.main}>
+      <section style={styles.hero}>
+        <div>
+          <h1 style={styles.h1}>Pro-se Prime</h1>
+          <p style={styles.lead}>
+            A guided, legal-information-only coach to help self-represented litigants organize facts,
+            focus arguments, and prepare for court—especially in high-volume state court settings.
+          </p>
+
+          <div style={styles.ctaRow}>
+            <Link href="/intake" style={styles.primaryBtn}>Start intake</Link>
+            <Link href="/coach" style={styles.secondaryBtn}>Go to coach</Link>
+          </div>
+
+          <div style={styles.note}>
+            <b>Not legal advice.</b> This tool helps you structure your story and prepare your presentation.
+          </div>
+        </div>
+
+        <div style={styles.card}>
+          <div style={styles.cardTitle}>What it produces</div>
+          <ul style={styles.ul}>
+            <li>Adaptive follow-up questions (to fill missing facts)</li>
+            <li>2-minute oral script for court</li>
+            <li>5-minute oral outline</li>
+            <li>Timeline + evidence checklist + gaps list</li>
+            <li>“Review-ready” summary packet</li>
+          </ul>
+          <div style={styles.cardHint}>
+            MVP focus: <b>NY state family</b> (orders of protection / custody) and high-volume proceedings.
+          </div>
+        </div>
+      </section>
+
+      <section style={styles.grid}>
+        <div style={styles.smallCard}>
+          <div style={styles.smallCardTitle}>1) Intake</div>
+          <div style={styles.smallCardText}>
+            Collect the goal, people, timeline, and evidence in a structured way.
+          </div>
+          <Link href="/intake" style={styles.link}>Open intake →</Link>
+        </div>
+
+        <div style={styles.smallCard}>
+          <div style={styles.smallCardTitle}>2) Coach</div>
+          <div style={styles.smallCardText}>
+            The AI asks follow-ups to narrow to the legally relevant facts and prepare your story.
+          </div>
+          <Link href="/coach" style={styles.link}>Open coach →</Link>
+        </div>
+
+        <div style={styles.smallCard}>
+          <div style={styles.smallCardTitle}>3) Outputs</div>
+          <div style={styles.smallCardText}>
+            Generate the script, outline, timeline, evidence list, and gaps to address.
+          </div>
+          <Link href="/outputs" style={styles.link}>Open outputs →</Link>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+const styles: Record<string, React.CSSProperties> = {
+  main: { display: "grid", gap: 18 },
+  hero: {
+    display: "grid",
+    gridTemplateColumns: "1.2fr 0.8fr",
+    gap: 16,
+    alignItems: "start",
+  },
+  h1: { margin: 0, fontSize: 42, letterSpacing: -0.7 },
+  lead: { marginTop: 10, marginBottom: 14, fontSize: 16, lineHeight: 1.5, opacity: 0.85 },
+  ctaRow: { display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 },
+  primaryBtn: {
+    display: "inline-block",
+    padding: "12px 14px",
+    borderRadius: 12,
+    border: "1px solid #111827",
+    background: "#111827",
+    color: "white",
+    textDecoration: "none",
+    fontWeight: 900,
+  },
+  secondaryBtn: {
+    display: "inline-block",
+    padding: "12px 14px",
+    borderRadius: 12,
+    border: "1px solid #e5e7eb",
+    background: "white",
+    color: "#111827",
+    textDecoration: "none",
+    fontWeight: 800,
+  },
+  note: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 14,
+    border: "1px solid #fde68a",
+    background: "#fffbeb",
+    color: "#92400e",
+    fontSize: 13,
+    lineHeight: 1.45,
+  },
+  card: {
+    borderRadius: 16,
+    border: "1px solid #e5e7eb",
+    background: "white",
+    padding: 14,
+  },
+  cardTitle: { fontWeight: 900, marginBottom: 8 },
+  ul: { margin: 0, paddingLeft: 18, display: "grid", gap: 6, opacity: 0.9 },
+  cardHint: { marginTop: 10, fontSize: 12, opacity: 0.75, lineHeight: 1.4 },
+  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 },
+  smallCard: { borderRadius: 16, border: "1px solid #e5e7eb", background: "white", padding: 14 },
+  smallCardTitle: { fontWeight: 900, marginBottom: 6 },
+  smallCardText: { opacity: 0.85, lineHeight: 1.45, marginBottom: 10 },
+  link: { textDecoration: "none", fontWeight: 900, color: "#111827" },
+};
