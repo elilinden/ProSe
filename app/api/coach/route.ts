@@ -30,10 +30,10 @@ type Store = {
 
 function getStore(): Store {
   const g = globalThis as any;
-  if (!g.__prosePrimeStore) {
-    g.__prosePrimeStore = { sessions: new Map<string, Session>() } as Store;
+  if (!g.__PROSE_PRIME_STORE__) {
+    g.__PROSE_PRIME_STORE__ = { sessions: new Map<string, Session>() } as Store;
   }
-  return g.__prosePrimeStore as Store;
+  return g.__PROSE_PRIME_STORE__ as Store;
 }
 
 function now() {
@@ -180,7 +180,7 @@ ${schemaInstruction}
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini", // FIX: Corrected model name
+      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
       input,
       response_format: { type: "json_object" },
       temperature: 0.2,

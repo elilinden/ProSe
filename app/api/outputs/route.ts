@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { assessSafety } from "../../../lib/rules/safetyRules";
 
 type Role = "user" | "assistant";
 
@@ -19,10 +20,10 @@ type Store = {
 
 function getStore(): Store {
   const g = globalThis as any;
-  if (!g.__prosePrimeStore) {
-    g.__prosePrimeStore = { sessions: new Map<string, Session>() } as Store;
+  if (!g.__PROSE_PRIME_STORE__) {
+    g.__PROSE_PRIME_STORE__ = { sessions: new Map<string, Session>() } as Store;
   }
-  return g.__prosePrimeStore as Store;
+  return g.__PROSE_PRIME_STORE__ as Store;
 }
 
 type Outputs = {
@@ -41,21 +42,12 @@ type Outputs = {
   safety_flags: string[];
 };
 
-function safetyHeuristics(text: string): string[] {
-  const t = (text || "").toLowerCase();
-  const flags: string[] = [];
-  const danger =
-    t.includes("kill myself") ||
-    t.includes("suicide") ||
-    t.includes("i want to die") ||
-    t.includes("kill him") ||
-    t.includes("kill her") ||
-    t.includes("gun") ||
-    t.includes("weapon") ||
-    t.includes("he has a gun") ||
-    t.includes("she has a gun");
-  if (danger) flags.push("danger_possible_immediate_risk");
-  return flags;
+function safetyFlagsFromText(text: string): string[] {
+  const assessment = assessSafety(text);
+  if (assessment.level === "urgent") {
+    return ["danger_possible_immediate_risk", ...assessment.flags];
+  }
+  return assessment.flags;
 }
 
 function lastUserText(session: Session): string {
@@ -74,7 +66,7 @@ function fallbackOutputs(session: Session): Outputs {
   const keyEvents = f.key_events || f.timeline || "Not specified yet.";
   const evidence = f.evidence || "Not specified yet.";
 
-  const safety_flags = safetyHeuristics(lastUserText(session));
+  const safety_flags = safetyFlagsFromText(lastUserText(session));
 
   const timeline: Array<{ date: string; event: string }> = [];
   if (Array.isArray(f.timeline)) {
@@ -212,7 +204,7 @@ Include "danger_possible_immediate_risk" in safety_flags if user suggests immedi
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "gpt-4.1-mini",
+      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
       input: [
         { role: "system", content: system },
         { role: "user", content: input },

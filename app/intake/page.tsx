@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -53,11 +53,6 @@ export default function IntakePage() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    // If they already have a session, keep it; intake can still be used to seed coach.
-    // (No need to auto-create here.)
-  }, []);
 
   async function onStart() {
     setLoading(true);
