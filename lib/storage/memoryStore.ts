@@ -1,5 +1,5 @@
 // lib/storage/memoryStore.ts
-
+import { kv } from "@vercel/kv";
 import type {
   SessionRecord,
   CreateSessionInput,
@@ -18,20 +18,11 @@ function uid() {
 const DEFAULT_JURISDICTION = "New York";
 const DEFAULT_TRACK: Track = "NY_FAMILY_PROTECTION_FROM_ABUSE";
 
-// Persist across hot reloads in dev (Next does module caching).
-declare global {
-  // eslint-disable-next-line no-var
-  var __PROSE_PRIME_STORE__: Map<string, SessionRecord> | undefined;
-}
+// Helper to construct redis keys
+const key = (id: string) => `prose:session:${id}`;
+const INDEX_KEY = "prose:sessions_list";
 
-const store: Map<string, SessionRecord> =
-  globalThis.__PROSE_PRIME_STORE__ ?? new Map<string, SessionRecord>();
-
-if (!globalThis.__PROSE_PRIME_STORE__) {
-  globalThis.__PROSE_PRIME_STORE__ = store;
-}
-
-export function createSession(input: CreateSessionInput = {}): SessionRecord {
+export async function createSession(input: CreateSessionInput = {}): Promise<SessionRecord> {
   const id = uid();
   const now = Date.now();
 
@@ -48,25 +39,26 @@ export function createSession(input: CreateSessionInput = {}): SessionRecord {
     messages: [],
   };
 
-  store.set(id, record);
+  // Save to Redis and add ID to the index list
+  await kv.set(key(id), record);
+  await kv.zadd(INDEX_KEY, { score: now, member: id });
+
   return record;
 }
 
-export function getSession(sessionId: string): SessionRecord | null {
+export async function getSession(sessionId: string): Promise<SessionRecord | null> {
   if (!sessionId) return null;
-  return store.get(sessionId) ?? null;
+  return await kv.get<SessionRecord>(key(sessionId));
 }
 
-export function requireSession(sessionId: string): SessionRecord {
-  const s = getSession(sessionId);
+export async function requireSession(sessionId: string): Promise<SessionRecord> {
+  const s = await getSession(sessionId);
   if (!s) throw new Error("Session not found. Start a new session.");
   return s;
 }
 
-export function appendMessage(input: AppendMessageInput): ChatMessage {
-  const session = requireSession(input.sessionId);
+export async function appendMessage(input: AppendMessageInput): Promise<ChatMessage> {
   const now = Date.now();
-
   const msg: ChatMessage = {
     id: uid(),
     role: input.role,
@@ -74,15 +66,22 @@ export function appendMessage(input: AppendMessageInput): ChatMessage {
     ts: now,
   };
 
-  session.messages = [...session.messages, msg];
+  // We fetch, update, and save.
+  // Note: In a high-traffic app, you'd want to use separate lists for messages to avoid race conditions.
+  // For this MVP, overwriting the object is acceptable but check for concurrency.
+  const session = await requireSession(input.sessionId);
+  
+  session.messages.push(msg);
   session.updatedAt = now;
 
-  store.set(session.id, session);
+  await kv.set(key(session.id), session);
+  await kv.zadd(INDEX_KEY, { score: now, member: session.id });
+
   return msg;
 }
 
-export function mergeFacts(input: MergeFactsInput): SessionFacts {
-  const session = requireSession(input.sessionId);
+export async function mergeFacts(input: MergeFactsInput): Promise<SessionFacts> {
+  const session = await requireSession(input.sessionId);
   const now = Date.now();
 
   const patch = input.patch || {};
@@ -96,25 +95,47 @@ export function mergeFacts(input: MergeFactsInput): SessionFacts {
   if (patch.track) session.track = patch.track as any;
 
   session.updatedAt = now;
-  store.set(session.id, session);
+  
+  await kv.set(key(session.id), session);
+  await kv.zadd(INDEX_KEY, { score: now, member: session.id });
+
   return session.facts;
 }
 
-export function saveOutputs(input: SaveOutputsInput) {
-  const session = requireSession(input.sessionId);
+export async function saveOutputs(input: SaveOutputsInput): Promise<void> {
+  const session = await requireSession(input.sessionId);
   const now = Date.now();
+  
   session.outputs = {
     generatedAt: now,
     payload: input.outputs,
   };
   session.updatedAt = now;
-  store.set(session.id, session);
+  
+  await kv.set(key(session.id), session);
+  await kv.zadd(INDEX_KEY, { score: now, member: session.id });
 }
 
-export function listSessions(): SessionRecord[] {
-  return Array.from(store.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+export async function listSessions(): Promise<SessionRecord[]> {
+  // Get latest 50 sessions from the sorted set (most recent first)
+  const ids = await kv.zrange(INDEX_KEY, 0, 49, { rev: true });
+  
+  if (!ids || ids.length === 0) return [];
+
+  // Fetch all sessions in parallel
+  // @ts-ignore - kv types can be tricky with array returns, strictly it returns strings
+  const pipelines = ids.map((id) => kv.get<SessionRecord>(key(String(id))));
+  const results = await Promise.all(pipelines);
+
+  return results.filter((s): s is SessionRecord => !!s);
 }
 
-export function resetAllSessions() {
-  store.clear();
+export async function resetAllSessions(): Promise<void> {
+  // Danger zone: strictly for dev/demos
+  const ids = await kv.zrange(INDEX_KEY, 0, -1);
+  if (ids.length > 0) {
+      const keys = ids.map(id => key(String(id)));
+      await kv.del(...keys);
+  }
+  await kv.del(INDEX_KEY);
 }
