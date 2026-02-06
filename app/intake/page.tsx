@@ -1,8 +1,10 @@
 "use client";
 
-import React, { useState } from "react";
-import { useRouter } from "next/navigation";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import CoachChat from "../../components/CoachChat";
+
+type Role = "user" | "assistant";
 
 type Session = {
   id: string;
@@ -12,193 +14,208 @@ type Session = {
   matterType?: string;
   track?: string;
   facts: Record<string, any>;
-  conversation: Array<{ role: "user" | "assistant"; content: string; ts: number }>;
+  conversation: Array<{ role: Role; content: string; ts: number }>;
+};
+
+type CoachReply = {
+  assistant_message: string;
+  next_questions: string[];
+  extracted_facts: Record<string, any>;
+  missing_fields: string[];
+  progress_percent: number;
+  safety_flags: string[];
 };
 
 const LS_KEY = "prose_prime_session_id";
 
-async function createSession(payload: { jurisdiction: string; matterType: string; track: string }): Promise<Session> {
-  const res = await fetch("/api/session", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+async function fetchSession(sessionId: string): Promise<Session> {
+  const res = await fetch(`/api/session?sessionId=${encodeURIComponent(sessionId)}`, {
+    method: "GET",
+    cache: "no-store",
   });
   const data = await res.json();
-  if (!data?.ok) throw new Error(data?.error || "Failed to create session");
+  if (!data?.ok) throw new Error(data?.error || "Failed to load session");
   return data.session as Session;
 }
 
-async function seedCoach(sessionId: string, intakeMessage: string) {
+async function sendToCoach(sessionId: string, userMessage: string): Promise<{ session: Session; coach: CoachReply }> {
   const res = await fetch("/api/coach", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId, userMessage: intakeMessage }),
+    body: JSON.stringify({ sessionId, userMessage }),
   });
   const data = await res.json();
-  if (!data?.ok) throw new Error(data?.error || "Failed to seed coach");
-  return data;
+  if (!data?.ok) throw new Error(data?.error || "Coach request failed");
+  return { session: data.session as Session, coach: data.coach as CoachReply };
 }
 
-export default function IntakePage() {
-  const router = useRouter();
+function hasMeaningfulIntakeFacts(facts: Record<string, any> | undefined | null): boolean {
+  if (!facts) return false;
 
-  const [jurisdiction, setJurisdiction] = useState("NY");
-  const [track, setTrack] = useState("order_of_protection"); // MVP default
-  const [matterType, setMatterType] = useState("family");
+  const goal = String(facts.goal_relief ?? "").trim();
+  const people = String(facts.people ?? "").trim();
+  const keyEvents = String(facts.key_events ?? "").trim();
+  const evidence = String(facts.evidence ?? "").trim();
 
-  const [goalRelief, setGoalRelief] = useState("");
-  const [people, setPeople] = useState("");
-  const [keyEvents, setKeyEvents] = useState("");
-  const [evidence, setEvidence] = useState("");
+  const timeline = facts.timeline;
+  const hasTimeline =
+    Array.isArray(timeline) && timeline.some((x) => x && (String(x.date ?? x.when ?? "").trim() || String(x.event ?? x.what ?? "").trim()));
 
-  const [loading, setLoading] = useState(false);
+  // If any of these exist, we treat intake as present and DO NOT auto-nudge.
+  return Boolean(goal || people || keyEvents || evidence || hasTimeline);
+}
+
+export default function CoachPage() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [seeding, setSeeding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function onStart() {
-    setLoading(true);
-    setError(null);
+  // Prevent accidental double-seeding (React strict mode + navigation quirks).
+  const didAutoSeedRef = useRef(false);
 
-    try {
-      let sessionId = localStorage.getItem(LS_KEY);
+  const sessionId = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    return localStorage.getItem(LS_KEY);
+  }, []);
 
-      if (!sessionId) {
-        const session = await createSession({ jurisdiction, matterType, track });
-        sessionId = session.id;
-        localStorage.setItem(LS_KEY, sessionId);
+  useEffect(() => {
+    let mounted = true;
+
+    async function load() {
+      try {
+        setError(null);
+        setLoading(true);
+
+        if (!sessionId) {
+          throw new Error("No session found. Start at Intake to create one.");
+        }
+
+        const s = await fetchSession(sessionId);
+        if (!mounted) return;
+
+        setSession(s);
+      } catch (e: any) {
+        if (!mounted) return;
+        setError(e?.message || "Failed to load Coach.");
+      } finally {
+        if (!mounted) return;
+        setLoading(false);
+      }
+    }
+
+    void load();
+    return () => {
+      mounted = false;
+    };
+  }, [sessionId]);
+
+  useEffect(() => {
+    // Auto-seed ONLY when:
+    // - session exists
+    // - conversation is empty
+    // - there are NO meaningful intake facts
+    // This prevents overwriting Intake-seeded context with a generic message.
+    async function maybeAutoSeed() {
+      if (!sessionId) return;
+      if (!session) return;
+      if (didAutoSeedRef.current) return;
+
+      const convLen = session.conversation?.length ?? 0;
+      if (convLen > 0) return;
+
+      const hasIntake = hasMeaningfulIntakeFacts(session.facts);
+      if (hasIntake) {
+        // Do not write anything into conversation. Let the user continue normally.
+        return;
       }
 
-      // Build a clean “intake summary” that the coach route can parse/extract from.
-      const intakeMessage =
-        `INTAKE SUMMARY\n` +
-        `Jurisdiction: ${jurisdiction}\n` +
-        `Matter type: ${matterType}\n` +
-        `Track: ${track}\n\n` +
-        `What I want the judge to do (goal/relief): ${goalRelief || "(not provided yet)"}\n\n` +
-        `People involved + relationship:\n${people || "(not provided yet)"}\n\n` +
-        `Key events (dates/approx dates, in order):\n${keyEvents || "(not provided yet)"}\n\n` +
-        `Evidence I have (texts, emails, photos, witnesses, records):\n${evidence || "(not provided yet)"}\n`;
-
-      await seedCoach(sessionId, intakeMessage);
-
-      router.push("/coach");
-    } catch (e: any) {
-      setError(e?.message || "Failed to start intake.");
-    } finally {
-      setLoading(false);
+      didAutoSeedRef.current = true;
+      setSeeding(true);
+      try {
+        const nudge =
+          "Tell me what you’re going to court about and what you want the judge to do. " +
+          "Then list 3–6 key events in date order and what evidence you have.";
+        const { session: updated } = await sendToCoach(sessionId, nudge);
+        setSession(updated);
+      } catch (e: any) {
+        setError(e?.message || "Failed to start coaching.");
+      } finally {
+        setSeeding(false);
+      }
     }
+
+    void maybeAutoSeed();
+  }, [session, sessionId]);
+
+  if (loading) {
+    return (
+      <main style={styles.main}>
+        <h1 style={styles.h1}>Coach</h1>
+        <p style={styles.muted}>Loading…</p>
+      </main>
+    );
   }
+
+  if (error) {
+    return (
+      <main style={styles.main}>
+        <div style={styles.headerRow}>
+          <div>
+            <h1 style={styles.h1}>Coach</h1>
+            <p style={styles.muted}>AI-assisted organization (not legal advice).</p>
+          </div>
+          <div style={styles.headerActions}>
+            <Link href="/intake" style={styles.linkBtn}>Intake</Link>
+            <Link href="/outputs" style={styles.linkBtn}>Outputs</Link>
+            <Link href="/review" style={styles.linkBtn}>Review</Link>
+          </div>
+        </div>
+
+        <div style={styles.errorBox}>{error}</div>
+      </main>
+    );
+  }
+
+  if (!sessionId || !session) {
+    return (
+      <main style={styles.main}>
+        <h1 style={styles.h1}>Coach</h1>
+        <p style={styles.muted}>No session found.</p>
+        <Link href="/intake" style={styles.linkBtn}>Go to Intake</Link>
+      </main>
+    );
+  }
+
+  const intakeDetected = hasMeaningfulIntakeFacts(session.facts);
+  const conversationEmpty = (session.conversation?.length ?? 0) === 0;
 
   return (
     <main style={styles.main}>
       <div style={styles.headerRow}>
         <div>
-          <h1 style={styles.h1}>Pro-se Prime | Intake</h1>
-          <p style={styles.muted}>
-            This is a guided intake to help you organize your story. It is <b>not</b> legal advice.
-          </p>
+          <h1 style={styles.h1}>Coach</h1>
+          <p style={styles.muted}>Guided questions to help you organize facts for court. Not legal advice.</p>
+          {seeding && <p style={styles.muted}>Starting…</p>}
+          {conversationEmpty && intakeDetected && (
+            <div style={styles.infoBox}>
+              I saved your intake. Ask me what you want help with first (for example: “turn my events into a timeline” or
+              “help me prepare a 2-minute script”).
+            </div>
+          )}
         </div>
         <div style={styles.headerActions}>
-          <Link href="/coach" style={styles.linkBtn}>Coach</Link>
-          <Link href="/review" style={styles.linkBtn}>Review</Link>
+          <Link href="/intake" style={styles.linkBtn}>Intake</Link>
           <Link href="/outputs" style={styles.linkBtn}>Outputs</Link>
+          <Link href="/review" style={styles.linkBtn}>Review</Link>
         </div>
       </div>
 
-      {error && <div style={styles.errorBox}>{error}</div>}
-
-      <section style={styles.card}>
-        <h2 style={styles.h2}>Basics</h2>
-
-        <div style={styles.grid}>
-          <label style={styles.label}>
-            Jurisdiction
-            <select value={jurisdiction} onChange={(e) => setJurisdiction(e.target.value)} style={styles.input}>
-              <option value="NY">NY</option>
-              <option value="PA">PA</option>
-              <option value="NJ">NJ</option>
-              <option value="CA">CA</option>
-            </select>
-          </label>
-
-          <label style={styles.label}>
-            Matter type
-            <select value={matterType} onChange={(e) => setMatterType(e.target.value)} style={styles.input}>
-              <option value="family">Family</option>
-              <option value="housing">Housing (L/T)</option>
-              <option value="small_claims">Small claims</option>
-            </select>
-          </label>
-
-          <label style={styles.label}>
-            Track (MVP)
-            <select value={track} onChange={(e) => setTrack(e.target.value)} style={styles.input}>
-              <option value="order_of_protection">Order of protection / protection from abuse</option>
-              <option value="custody">Child custody / visitation</option>
-              <option value="landlord_tenant">Landlord–tenant</option>
-              <option value="small_claims">Small claims</option>
-            </select>
-          </label>
-        </div>
-      </section>
-
-      <section style={styles.card}>
-        <h2 style={styles.h2}>What you want the judge to do</h2>
-        <textarea
-          value={goalRelief}
-          onChange={(e) => setGoalRelief(e.target.value)}
-          placeholder="Example: I’m asking for an order of protection and no contact. Or: I’m asking to modify visitation to…"
-          style={styles.textarea}
-        />
-      </section>
-
-      <section style={styles.card}>
-        <h2 style={styles.h2}>People involved</h2>
-        <textarea
-          value={people}
-          onChange={(e) => setPeople(e.target.value)}
-          placeholder="List the people and relationship. Example: Me (Eli), respondent (X), child (Y). We are married / dating / co-parents…"
-          style={styles.textarea}
-        />
-      </section>
-
-      <section style={styles.card}>
-        <h2 style={styles.h2}>Key events (date order)</h2>
-        <p style={styles.muted}>Try 3–6 bullets with dates or approximate dates.</p>
-        <textarea
-          value={keyEvents}
-          onChange={(e) => setKeyEvents(e.target.value)}
-          placeholder="Example:\n- Jan 12: …\n- Feb 3: …\n- Late March: …"
-          style={styles.textarea}
-        />
-      </section>
-
-      <section style={styles.card}>
-        <h2 style={styles.h2}>Evidence you have</h2>
-        <textarea
-          value={evidence}
-          onChange={(e) => setEvidence(e.target.value)}
-          placeholder="Texts, emails, photos, screenshots, witnesses, police reports, medical records, call logs, etc."
-          style={styles.textarea}
-        />
-      </section>
-
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <button onClick={() => void onStart()} style={styles.button} disabled={loading}>
-          {loading ? "Starting…" : "Start coaching"}
-        </button>
-
-        <Link href="/coach" style={styles.secondaryBtn}>
-          Skip intake
-        </Link>
-      </div>
-
-      <div style={styles.disclaimerCard}>
-        <div style={{ fontWeight: 800, marginBottom: 6 }}>Reminder</div>
-        <div style={{ opacity: 0.9, lineHeight: 1.45 }}>
-          Pro-se Prime provides general legal information and writing/organization help. It does not provide legal advice,
-          does not create an attorney-client relationship, and does not guarantee outcomes.
-        </div>
-      </div>
+      <CoachChat
+        sessionId={sessionId}
+        session={session}
+        onSessionUpdate={setSession}
+      />
     </main>
   );
 }
@@ -208,41 +225,7 @@ const styles: Record<string, React.CSSProperties> = {
   headerRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 16 },
   headerActions: { display: "flex", gap: 10, flexWrap: "wrap" },
   h1: { fontSize: 28, margin: 0 },
-  h2: { fontSize: 18, margin: "0 0 8px" },
   muted: { margin: "6px 0 0", opacity: 0.7, lineHeight: 1.4 },
-  card: { border: "1px solid #e5e7eb", borderRadius: 14, padding: 16, marginBottom: 14, background: "#fff" },
-  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginTop: 10 },
-  label: { display: "flex", flexDirection: "column", gap: 6, fontWeight: 700, fontSize: 13 },
-  input: { padding: "10px 12px", borderRadius: 12, border: "1px solid #d1d5db", fontSize: 14, background: "#fff" },
-  textarea: {
-    width: "100%",
-    minHeight: 110,
-    padding: 12,
-    borderRadius: 12,
-    border: "1px solid #d1d5db",
-    fontSize: 14,
-    lineHeight: 1.45,
-    resize: "vertical",
-  },
-  button: {
-    padding: "12px 14px",
-    borderRadius: 12,
-    border: "1px solid #111827",
-    background: "#111827",
-    color: "white",
-    fontWeight: 800,
-    cursor: "pointer",
-  },
-  secondaryBtn: {
-    display: "inline-block",
-    padding: "12px 14px",
-    borderRadius: 12,
-    border: "1px solid #d1d5db",
-    background: "#fff",
-    textDecoration: "none",
-    color: "#111827",
-    fontWeight: 700,
-  },
   linkBtn: {
     display: "inline-block",
     padding: "10px 12px",
@@ -262,12 +245,14 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 12,
     fontWeight: 700,
   },
-  disclaimerCard: {
-    border: "1px solid #fde68a",
-    background: "#fffbeb",
-    borderRadius: 14,
-    padding: 14,
-    marginTop: 16,
-    color: "#92400e",
+  infoBox: {
+    marginTop: 10,
+    padding: 12,
+    borderRadius: 12,
+    border: "1px solid #bfdbfe",
+    background: "#eff6ff",
+    color: "#1e3a8a",
+    fontWeight: 650,
+    lineHeight: 1.45,
   },
 };
