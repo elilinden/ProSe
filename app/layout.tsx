@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import "../styles/globals.css"; // Crucial: Loads your glass theme
 
 export const metadata: Metadata = {
   title: "Pro-se Prime",
@@ -9,28 +10,28 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body style={styles.body}>
-        <header style={styles.header}>
-          <div style={styles.headerInner}>
-            <Link href="/" style={styles.brand}>
+      <body>
+        <header className="header-glass">
+          <div className="header-inner">
+            <Link href="/" className="brand">
               Pro-se Prime
             </Link>
 
-            <nav style={styles.nav}>
-              <Link href="/intake" style={styles.navLink}>Intake</Link>
-              <Link href="/coach" style={styles.navLink}>Coach</Link>
-              <Link href="/outputs" style={styles.navLink}>Outputs</Link>
-              <Link href="/review" style={styles.navLink}>Review</Link>
+            <nav className="nav">
+              <Link href="/intake" className="nav-link">Intake</Link>
+              <Link href="/coach" className="nav-link">Coach</Link>
+              <Link href="/outputs" className="nav-link">Outputs</Link>
+              <Link href="/review" className="nav-link">Review</Link>
             </nav>
           </div>
         </header>
 
-        <div style={styles.container}>{children}</div>
+        <div className="container">{children}</div>
 
-        <footer style={styles.footer}>
-          <div style={styles.footerInner}>
-            <div style={{ fontWeight: 800 }}>Legal information only</div>
-            <div style={{ opacity: 0.8, lineHeight: 1.4 }}>
+        <footer className="footer">
+          <div className="footer-inner">
+            <div style={{ fontWeight: 600 }}>Legal information only</div>
+            <div className="muted" style={{ fontSize: "13px" }}>
               Pro-se Prime does not provide legal advice, does not create an attorney–client relationship,
               and does not guarantee outcomes. If you are in immediate danger, call local emergency services.
             </div>
@@ -40,66 +41,3 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     </html>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  body: {
-    margin: 0,
-    background: "#f6f7fb",
-    color: "#111827",
-    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto",
-  },
-  header: {
-    position: "sticky",
-    top: 0,
-    zIndex: 10,
-    background: "rgba(255,255,255,0.9)",
-    backdropFilter: "blur(8px)",
-    borderBottom: "1px solid #e5e7eb",
-  },
-  headerInner: {
-    maxWidth: 980,
-    margin: "0 auto",
-    padding: "14px 18px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 14,
-  },
-  brand: {
-    textDecoration: "none",
-    color: "#111827",
-    fontWeight: 900,
-    letterSpacing: -0.2,
-    fontSize: 16,
-  },
-  nav: { display: "flex", gap: 10, flexWrap: "wrap" },
-  navLink: {
-    textDecoration: "none",
-    color: "#111827",
-    padding: "8px 10px",
-    borderRadius: 10,
-    border: "1px solid #e5e7eb",
-    background: "#fff",
-    fontWeight: 700,
-    fontSize: 13,
-  },
-  container: {
-    maxWidth: 980,
-    margin: "0 auto",
-    padding: "18px 18px 36px",
-    minHeight: "calc(100vh - 140px)",
-  },
-  footer: {
-    borderTop: "1px solid #e5e7eb",
-    background: "#ffffff",
-  },
-  footerInner: {
-    maxWidth: 980,
-    margin: "0 auto",
-    padding: "14px 18px",
-    display: "grid",
-    gap: 6,
-    fontSize: 12,
-    color: "#374151",
-  },
-};
