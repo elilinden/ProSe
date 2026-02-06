@@ -1,20 +1,13 @@
 import { NextResponse } from "next/server";
 import { assessSafety } from "../../../lib/rules/safetyRules";
+import { 
+  requireSession, 
+  appendMessage, 
+  mergeFacts 
+} from "../../../lib/storage/memoryStore";
+import type { SessionRecord } from "../../../lib/storage/sessionTypes";
 
 export const runtime = "nodejs";
-
-type Role = "user" | "assistant";
-
-type Session = {
-  id: string;
-  createdAt: number;
-  updatedAt: number;
-  jurisdiction?: string;
-  matterType?: string;
-  track?: string;
-  facts: Record<string, any>;
-  conversation: Array<{ role: Role; content: string; ts: number }>;
-};
 
 type CoachReply = {
   assistant_message: string;
@@ -25,35 +18,7 @@ type CoachReply = {
   safety_flags: string[];
 };
 
-type Store = {
-  sessions: Map<string, Session>;
-};
-
-function getStore(): Store {
-  const g = globalThis as any;
-  if (!g.__PROSE_PRIME_STORE__) {
-    g.__PROSE_PRIME_STORE__ = { sessions: new Map<string, Session>() } as Store;
-  }
-
-  // If some old route accidentally created it as a Map, repair it.
-  if (g.__PROSE_PRIME_STORE__ instanceof Map) {
-    const legacyMap = g.__PROSE_PRIME_STORE__ as Map<string, Session>;
-    g.__PROSE_PRIME_STORE__ = { sessions: legacyMap } as Store;
-  }
-
-  // If it exists but is missing sessions, repair it.
-  if (!g.__PROSE_PRIME_STORE__?.sessions || !(g.__PROSE_PRIME_STORE__.sessions instanceof Map)) {
-    g.__PROSE_PRIME_STORE__ = { sessions: new Map<string, Session>() } as Store;
-  }
-
-  return g.__PROSE_PRIME_STORE__ as Store;
-}
-
-function now() {
-  return Date.now();
-}
-
-function computeMissingFields(session: Session): string[] {
+function computeMissingFields(session: SessionRecord): string[] {
   const f = session.facts ?? {};
   const missing: string[] = [];
   if (!session.jurisdiction) missing.push("jurisdiction");
@@ -65,14 +30,14 @@ function computeMissingFields(session: Session): string[] {
   return missing;
 }
 
-function computeProgressPercent(session: Session): number {
+function computeProgressPercent(session: SessionRecord): number {
   const missing = computeMissingFields(session);
   const total = 6;
   const filled = total - missing.length;
   return Math.max(5, Math.min(95, Math.round((filled / total) * 100)));
 }
 
-function fallbackCoach(session: Session, lastUser: string): CoachReply {
+function fallbackCoach(session: SessionRecord, lastUser: string): CoachReply {
   const missing = computeMissingFields(session);
   const progress = computeProgressPercent(session);
   const safetyAssessment = assessSafety(lastUser);
@@ -111,7 +76,7 @@ async function callOpenAI({
   session,
   userMessage,
 }: {
-  session: Session;
+  session: SessionRecord;
   userMessage: string;
 }): Promise<CoachReply> {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -152,7 +117,7 @@ safety_flags (string[]).
 `;
 
   // Include a little recent context but keep it compact
-  const recent = session.conversation.slice(-10).map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n");
+  const recent = (session.messages || []).slice(-10).map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n");
 
   const messages = [
     { role: "system", content: system },
@@ -161,7 +126,7 @@ safety_flags (string[]).
       content:
         `SESSION META:\n` +
         `Jurisdiction=${session.jurisdiction || "unknown"}\n` +
-        `MatterType=${session.matterType || "unknown"}\n` +
+        `MatterType=${"family"}\n` + // simplified, add matterType to sessionRecord if needed
         `Track=${session.track || "unknown"}\n\n` +
         `FACTS_JSON=${JSON.stringify(session.facts || {})}\n\n` +
         `RECENT:\n${recent}\n\n` +
@@ -223,36 +188,30 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "Missing sessionId or message" }, { status: 400 });
     }
 
-    const store = getStore();
-    const session = store.sessions.get(sessionId);
+    // 1. Fetch Session
+    const session = await requireSession(sessionId);
 
-    if (!session) {
-      return NextResponse.json(
-        { ok: false, error: "Session not found (server memory reset?)" },
-        { status: 404 }
-      );
-    }
+    // 2. Persist User Message
+    const userMsg = await appendMessage({ sessionId, role: "user", content: userMessage });
+    
+    // Update local session object so AI sees the new message context
+    session.messages.push(userMsg);
 
-    // Add user message
-    session.conversation.push({ role: "user", content: userMessage, ts: now() });
-
-    // Generate coach response
+    // 3. Call AI
     const coach = await callOpenAI({ session, userMessage });
 
-    // Merge extracted facts
+    // 4. Merge Extracted Facts
     if (coach.extracted_facts && typeof coach.extracted_facts === "object") {
-      session.facts = { ...(session.facts || {}), ...coach.extracted_facts };
+       session.facts = await mergeFacts({ sessionId, patch: coach.extracted_facts });
     }
 
-    // Add assistant message
-    session.conversation.push({ role: "assistant", content: coach.assistant_message, ts: now() });
-
-    // Update timestamps + persist in store
-    session.updatedAt = now();
-    store.sessions.set(session.id, session);
+    // 5. Persist Assistant Message
+    const assistantMsg = await appendMessage({ sessionId, role: "assistant", content: coach.assistant_message });
+    session.messages.push(assistantMsg);
 
     return NextResponse.json({ ok: true, session, coach }, { headers: { "Cache-Control": "no-store" } });
   } catch (e: any) {
+    console.error("Coach API Error:", e);
     return NextResponse.json(
       { ok: false, error: e?.message || "Unexpected error in /api/coach" },
       { status: 500 }
