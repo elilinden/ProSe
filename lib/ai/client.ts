@@ -6,7 +6,7 @@ export const openai = new OpenAI({
 
 export function getModel(): string {
   // safe default for MVP. You can switch later.
-  return process.env.OPENAI_MODEL || "gpt-4.1-mini";
+  return process.env.OPENAI_MODEL || "gpt-4o-mini";
 }
 
 export function requireApiKey() {
