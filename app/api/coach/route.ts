@@ -1,3 +1,5 @@
+// app/api/coach/route.ts
+
 import { NextResponse } from "next/server";
 // FIX: Use relative path instead of "@/" alias until tsconfig is updated
 import { assessSafety } from "../../../lib/rules/safetyRules";
@@ -24,14 +26,13 @@ type CoachReply = {
   safety_flags: string[];
 };
 
-type Store = {
-  sessions: Map<string, Session>;
-};
+// ✅ FIX: Make the global store the SAME shape as app/api/session/route.ts (a Map)
+type Store = Map<string, Session>;
 
 function getStore(): Store {
   const g = globalThis as any;
   if (!g.__PROSE_PRIME_STORE__) {
-    g.__PROSE_PRIME_STORE__ = { sessions: new Map<string, Session>() } as Store;
+    g.__PROSE_PRIME_STORE__ = new Map<string, Session>();
   }
   return g.__PROSE_PRIME_STORE__ as Store;
 }
@@ -70,7 +71,7 @@ function computeProgressPercent(session: Session): number {
 function fallbackCoach(session: Session, lastUser: string): CoachReply {
   const missing = computeMissingFields(session);
   const progress = computeProgressPercent(session);
-  
+
   // Use the robust shared safety logic instead of local heuristics
   const safetyAssessment = assessSafety(lastUser);
   const flags = safetyAssessment.flags;
@@ -88,10 +89,16 @@ function fallbackCoach(session: Session, lastUser: string): CoachReply {
   }
 
   const nextQuestions: string[] = [];
-  if (missing.includes("goal_relief")) nextQuestions.push("What exactly do you want the judge to do (the result you’re asking for)?");
-  if (missing.includes("people")) nextQuestions.push("Who is involved (names/initials, relationship, and who you are asking about)?");
-  if (missing.includes("key_events_or_timeline")) nextQuestions.push("What are the 3–6 most important events in date order (include dates or approximate dates)?");
-  if (missing.includes("evidence")) nextQuestions.push("What proof do you have (texts, emails, photos, witnesses, medical/police records, etc.)?");
+  if (missing.includes("goal_relief"))
+    nextQuestions.push("What exactly do you want the judge to do (the result you’re asking for)?");
+  if (missing.includes("people"))
+    nextQuestions.push("Who is involved (names/initials, relationship, and who you are asking about)?");
+  if (missing.includes("key_events_or_timeline"))
+    nextQuestions.push(
+      "What are the 3–6 most important events in date order (include dates or approximate dates)?"
+    );
+  if (missing.includes("evidence"))
+    nextQuestions.push("What proof do you have (texts, emails, photos, witnesses, medical/police records, etc.)?");
 
   if (nextQuestions.length === 0) {
     nextQuestions.push("What is the strongest fact that supports what you’re asking for?");
@@ -121,7 +128,7 @@ async function callOpenAI({
 
   // 1. Run rigorous regex safety check FIRST
   const safetyAssessment = assessSafety(userMessage);
-  
+
   // If urgent, skip AI and return safety message immediately
   if (safetyAssessment.level === "urgent" && safetyAssessment.userFacingMessage) {
     return {
@@ -167,7 +174,9 @@ ${schemaInstruction}
     {
       role: "user",
       content:
-        `Context:\nJurisdiction=${session.jurisdiction || "unknown"}\nTrack=${session.track || "unknown"}\nFacts JSON=${JSON.stringify(session.facts || {})}\n\nConversation so far:\n` +
+        `Context:\nJurisdiction=${session.jurisdiction || "unknown"}\nTrack=${
+          session.track || "unknown"
+        }\nFacts JSON=${JSON.stringify(session.facts || {})}\n\nConversation so far:\n` +
         recent.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n") +
         `\n\nNew user message:\n${userMessage}`,
     },
@@ -196,10 +205,7 @@ ${schemaInstruction}
 
   // responses API usually returns output_text; handle a few shapes defensively
   const text =
-    data?.output_text ||
-    data?.output?.[0]?.content?.[0]?.text ||
-    data?.output?.[0]?.content?.[0]?.json ||
-    "";
+    data?.output_text || data?.output?.[0]?.content?.[0]?.text || data?.output?.[0]?.content?.[0]?.json || "";
 
   let parsed: any;
   try {
@@ -213,12 +219,16 @@ ${schemaInstruction}
   const mergedFlags = Array.from(new Set([...safetyAssessment.flags, ...aiFlags]));
 
   const reply: CoachReply = {
-    assistant_message: String(parsed?.assistant_message || "OK — tell me more, focusing on dates and what you want the judge to do."),
+    assistant_message: String(
+      parsed?.assistant_message || "OK — tell me more, focusing on dates and what you want the judge to do."
+    ),
     next_questions: Array.isArray(parsed?.next_questions) ? parsed.next_questions.map(String).slice(0, 6) : [],
     // Ensure we look for the correct key "extracted_facts"
     extracted_facts: parsed?.extracted_facts && typeof parsed.extracted_facts === "object" ? parsed.extracted_facts : {},
     missing_fields: Array.isArray(parsed?.missing_fields) ? parsed.missing_fields.map(String) : computeMissingFields(session),
-    progress_percent: Number.isFinite(parsed?.progress_percent) ? Number(parsed.progress_percent) : computeProgressPercent(session),
+    progress_percent: Number.isFinite(parsed?.progress_percent)
+      ? Number(parsed.progress_percent)
+      : computeProgressPercent(session),
     safety_flags: mergedFlags,
   };
 
@@ -239,7 +249,9 @@ export async function POST(req: Request) {
     }
 
     const store = getStore();
-    const session = store.sessions.get(sessionId);
+
+    // ✅ FIX: store is the Map
+    const session = store.get(sessionId);
 
     if (!session) {
       return NextResponse.json({ ok: false, error: "Session not found (server memory reset?)" }, { status: 404 });
@@ -266,13 +278,11 @@ export async function POST(req: Request) {
     coach.missing_fields = coach.missing_fields?.length ? coach.missing_fields : computeMissingFields(session);
     coach.progress_percent = Number.isFinite(coach.progress_percent) ? coach.progress_percent : computeProgressPercent(session);
 
-    store.sessions.set(session.id, session);
+    // ✅ FIX: save back into the Map
+    store.set(session.id, session);
 
     return NextResponse.json({ ok: true, session, coach });
   } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: e?.message || "Unexpected error in /api/coach" },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: e?.message || "Unexpected error in /api/coach" }, { status: 500 });
   }
 }
