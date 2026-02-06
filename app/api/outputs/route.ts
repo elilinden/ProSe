@@ -1,4 +1,3 @@
-// app/api/outputs/route.ts
 import { NextResponse } from "next/server";
 import { assessSafety } from "../../../lib/rules/safetyRules";
 import { requireSession, saveOutputs } from "../../../lib/storage/memoryStore";
@@ -254,7 +253,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "Missing sessionId" }, { status: 400 });
     }
 
-    const session = requireSession(sessionId);
+    // Await the database call
+    const session = await requireSession(sessionId);
 
     // cache hit (optional): if you want to always regenerate, remove this block
     if (session.outputs?.payload) {
@@ -263,11 +263,12 @@ export async function POST(req: Request) {
 
     const outputs = await generateWithOpenAI(session);
 
-    // store in memory so the Outputs page can refresh without regenerating
-    saveOutputs({ sessionId, outputs });
+    // Await the database save
+    await saveOutputs({ sessionId, outputs });
 
     return NextResponse.json({ ok: true, outputs });
   } catch (e: any) {
+    console.error("Outputs API Error:", e);
     return NextResponse.json(
       { ok: false, error: e?.message || "Unexpected error in /api/outputs" },
       { status: 500 }
