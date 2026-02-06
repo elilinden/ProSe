@@ -1,5 +1,5 @@
-// Next.js Route Handler
-// Recommended location: app/api/session/route.ts
+// app/api/session/route.ts
+// Stores sessions in a single in-memory Map on globalThis, shared across route handlers.
 
 import { NextRequest, NextResponse } from "next/server";
 
@@ -82,7 +82,8 @@ export async function POST(req: NextRequest) {
     conversation: [],
   };
 
-  getStore().set(id, session);
+  const store = getStore();
+  store.set(id, session);
 
   return safeJson({ ok: true, sessionId: id, session });
 }
