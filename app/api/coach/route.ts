@@ -126,10 +126,8 @@ async function callOpenAI({
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return fallbackCoach(session, userMessage);
 
-  // 1. Run rigorous regex safety check FIRST
   const safetyAssessment = assessSafety(userMessage);
 
-  // If urgent, skip AI and return safety message immediately
   if (safetyAssessment.level === "urgent" && safetyAssessment.userFacingMessage) {
     return {
       assistant_message: safetyAssessment.userFacingMessage,
@@ -140,6 +138,86 @@ async function callOpenAI({
       safety_flags: safetyAssessment.flags,
     };
   }
+
+  const schemaInstruction = `
+Return ONLY valid JSON (no markdown) with keys:
+assistant_message (string)
+next_questions (string[])
+extracted_facts (object)
+missing_fields (string[])
+progress_percent (number 0-100)
+safety_flags (string[])
+`;
+
+  const system = `
+You are Pro-se Prime, a legal-information-only coach for self-represented people.
+- Ask focused follow-up questions
+- Help them organize facts chronologically
+- Help them align facts to what they are asking the judge to do
+- Prepare a concise oral outline
+Do NOT give legal advice.
+${schemaInstruction}
+`;
+
+  const recent = session.conversation.slice(-10).map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+
+  const messages = [
+    { role: "system", content: system },
+    {
+      role: "user",
+      content:
+        `Context:\nJurisdiction=${session.jurisdiction || "unknown"}\nTrack=${
+          session.track || "unknown"
+        }\nFacts JSON=${JSON.stringify(session.facts || {})}\n\nConversation so far:\n` +
+        recent.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n") +
+        `\n\nNew user message:\n${userMessage}`,
+    },
+  ];
+
+  // UPDATED: Correct endpoint, model name, and payload key
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini", // Corrected model name
+      messages, // Changed from "input" to "messages"
+      response_format: { type: "json_object" },
+      temperature: 0.2,
+    }),
+  });
+
+  if (!resp.ok) return fallbackCoach(session, userMessage);
+
+  const data = await resp.json();
+
+  // UPDATED: Standard parsing for Chat Completions API
+  const text = data?.choices?.[0]?.message?.content || "";
+
+  let parsed: any;
+  try {
+    parsed = typeof text === "string" ? JSON.parse(text) : text;
+  } catch {
+    return fallbackCoach(session, userMessage);
+  }
+
+  const aiFlags = Array.isArray(parsed?.safety_flags) ? parsed.safety_flags : [];
+  const mergedFlags = Array.from(new Set([...safetyAssessment.flags, ...aiFlags]));
+
+  return {
+    assistant_message: String(parsed?.assistant_message || "OK — tell me more."),
+    next_questions: Array.isArray(parsed?.next_questions) ? parsed.next_questions.slice(0, 6) : [],
+    extracted_facts: parsed?.extracted_facts || {},
+    missing_fields: Array.isArray(parsed?.missing_fields) ? parsed.missing_fields : computeMissingFields(session),
+    progress_percent: Number.isFinite(parsed?.progress_percent) ? Number(parsed.progress_percent) : computeProgressPercent(session),
+    safety_flags: mergedFlags,
+  };
+}
 
   const schemaInstruction = `
 Return ONLY valid JSON (no markdown) with keys:
