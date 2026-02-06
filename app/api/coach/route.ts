@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { assessSafety } from "../../../lib/rules/safetyRules";
 
+export const runtime = "nodejs";
+
 type Role = "user" | "assistant";
 
 type Session = {
@@ -23,13 +25,27 @@ type CoachReply = {
   safety_flags: string[];
 };
 
-type Store = Map<string, Session>;
+type Store = {
+  sessions: Map<string, Session>;
+};
 
 function getStore(): Store {
   const g = globalThis as any;
   if (!g.__PROSE_PRIME_STORE__) {
-    g.__PROSE_PRIME_STORE__ = new Map<string, Session>();
+    g.__PROSE_PRIME_STORE__ = { sessions: new Map<string, Session>() } as Store;
   }
+
+  // If some old route accidentally created it as a Map, repair it.
+  if (g.__PROSE_PRIME_STORE__ instanceof Map) {
+    const legacyMap = g.__PROSE_PRIME_STORE__ as Map<string, Session>;
+    g.__PROSE_PRIME_STORE__ = { sessions: legacyMap } as Store;
+  }
+
+  // If it exists but is missing sessions, repair it.
+  if (!g.__PROSE_PRIME_STORE__?.sessions || !(g.__PROSE_PRIME_STORE__.sessions instanceof Map)) {
+    g.__PROSE_PRIME_STORE__ = { sessions: new Map<string, Session>() } as Store;
+  }
+
   return g.__PROSE_PRIME_STORE__ as Store;
 }
 
@@ -60,7 +76,7 @@ function fallbackCoach(session: Session, lastUser: string): CoachReply {
   const missing = computeMissingFields(session);
   const progress = computeProgressPercent(session);
   const safetyAssessment = assessSafety(lastUser);
-  
+
   if (safetyAssessment.level === "urgent" && safetyAssessment.userFacingMessage) {
     return {
       assistant_message: safetyAssessment.userFacingMessage,
@@ -74,12 +90,15 @@ function fallbackCoach(session: Session, lastUser: string): CoachReply {
 
   const nextQuestions: string[] = [];
   if (missing.includes("goal_relief")) nextQuestions.push("What exactly do you want the judge to do?");
-  if (missing.includes("people")) nextQuestions.push("Who is involved?");
-  if (missing.includes("key_events_or_timeline")) nextQuestions.push("What are the 3–6 most important events in date order?");
-  if (missing.includes("evidence")) nextQuestions.push("What proof do you have?");
+  if (missing.includes("people")) nextQuestions.push("Who is involved (names/roles/relationship)?");
+  if (missing.includes("key_events_or_timeline"))
+    nextQuestions.push("What are the 3–6 most important events in date order (include dates or approximate dates)?");
+  if (missing.includes("evidence"))
+    nextQuestions.push("What proof do you have for the most important events (texts, photos, witnesses, records)?");
 
   return {
-    assistant_message: "Thanks — I’m going to help you organize this for court. Answer the questions below as clearly as you can.",
+    assistant_message:
+      "Thanks — I’ll help you organize this for court. Answer the questions below as clearly as you can. Stick to dates, what happened, and what you want the judge to do.",
     next_questions: nextQuestions.slice(0, 4),
     extracted_facts: {},
     missing_fields: missing,
@@ -111,22 +130,43 @@ async function callOpenAI({
   }
 
   const system = `
-You are Pro-se Prime, a legal-information-only coach.
-- Ask focused follow-up questions.
-- Help them organize facts chronologically.
-Return ONLY valid JSON with keys: assistant_message, next_questions, extracted_facts, missing_fields, progress_percent, safety_flags.
-  `;
+You are Pro-se Prime, a legal-information-only coach for self-represented litigants.
 
-  const recent = session.conversation.slice(-10).map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
+Goals:
+- Ask focused follow-up questions that pull out legally relevant facts (dates, who/what/where, what relief they want).
+- Help organize the story chronologically and tie facts to what the judge will consider (without giving legal advice).
+- Help the user prepare for a short, high-pressure court appearance.
+
+Hard rules:
+- Do NOT provide legal advice. Do NOT cite statutes or cases. Do NOT predict outcomes.
+- Do NOT tell them what to file. Only help them organize facts and prepare to present clearly.
+- If user suggests immediate danger/violence, prioritize safety and return a short safety-oriented message.
+
+Return ONLY valid JSON (no markdown), with keys:
+assistant_message (string),
+next_questions (string[]),
+extracted_facts (object),
+missing_fields (string[]),
+progress_percent (number),
+safety_flags (string[]).
+`;
+
+  // Include a little recent context but keep it compact
+  const recent = session.conversation.slice(-10).map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n");
 
   const messages = [
     { role: "system", content: system },
     {
       role: "user",
-      content: `Facts JSON=${JSON.stringify(session.facts || {})}\n\nUser: ${userMessage}`,
+      content:
+        `SESSION META:\n` +
+        `Jurisdiction=${session.jurisdiction || "unknown"}\n` +
+        `MatterType=${session.matterType || "unknown"}\n` +
+        `Track=${session.track || "unknown"}\n\n` +
+        `FACTS_JSON=${JSON.stringify(session.facts || {})}\n\n` +
+        `RECENT:\n${recent}\n\n` +
+        `NEW USER MESSAGE:\n${userMessage}\n\n` +
+        `Now respond with JSON only.`,
     },
   ];
 
@@ -156,15 +196,20 @@ Return ONLY valid JSON with keys: assistant_message, next_questions, extracted_f
     return fallbackCoach(session, userMessage);
   }
 
-  const mergedFlags = Array.from(new Set([...safetyAssessment.flags, ...(parsed?.safety_flags || [])]));
+  const mergedFlags = Array.from(new Set([...safetyAssessment.flags, ...((parsed?.safety_flags as any[]) || [])]));
 
   return {
     assistant_message: String(parsed?.assistant_message || "OK — tell me more."),
-    next_questions: Array.isArray(parsed?.next_questions) ? parsed.next_questions.slice(0, 6) : [],
-    extracted_facts: parsed?.extracted_facts || {},
-    missing_fields: Array.isArray(parsed?.missing_fields) ? parsed.missing_fields : computeMissingFields(session),
+    next_questions: Array.isArray(parsed?.next_questions) ? parsed.next_questions.slice(0, 6).map(String) : [],
+    extracted_facts:
+      parsed?.extracted_facts && typeof parsed.extracted_facts === "object" && !Array.isArray(parsed.extracted_facts)
+        ? parsed.extracted_facts
+        : {},
+    missing_fields: Array.isArray(parsed?.missing_fields)
+      ? parsed.missing_fields.map(String)
+      : computeMissingFields(session),
     progress_percent: Number(parsed?.progress_percent) || computeProgressPercent(session),
-    safety_flags: mergedFlags,
+    safety_flags: mergedFlags.map(String),
   };
 }
 
@@ -172,32 +217,45 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => null);
     const sessionId = body?.sessionId;
-    const userMessage = (body?.userMessage ?? "").toString();
+    const userMessage = (body?.userMessage ?? "").toString().trim();
 
-    if (!sessionId || !userMessage.trim()) {
-      return NextResponse.json({ ok: false, error: "Missing ID or message" }, { status: 400 });
+    if (!sessionId || typeof sessionId !== "string" || !userMessage) {
+      return NextResponse.json({ ok: false, error: "Missing sessionId or message" }, { status: 400 });
     }
 
     const store = getStore();
-    const session = store.get(sessionId);
+    const session = store.sessions.get(sessionId);
 
     if (!session) {
-      return NextResponse.json({ ok: false, error: "Session not found" }, { status: 404 });
+      return NextResponse.json(
+        { ok: false, error: "Session not found (server memory reset?)" },
+        { status: 404 }
+      );
     }
 
-    session.conversation.push({ role: "user", content: userMessage.trim(), ts: now() });
-    const coach = await callOpenAI({ session, userMessage: userMessage.trim() });
+    // Add user message
+    session.conversation.push({ role: "user", content: userMessage, ts: now() });
 
-    if (coach.extracted_facts) {
+    // Generate coach response
+    const coach = await callOpenAI({ session, userMessage });
+
+    // Merge extracted facts
+    if (coach.extracted_facts && typeof coach.extracted_facts === "object") {
       session.facts = { ...(session.facts || {}), ...coach.extracted_facts };
     }
 
+    // Add assistant message
     session.conversation.push({ role: "assistant", content: coach.assistant_message, ts: now() });
-    session.updatedAt = now();
-    store.set(session.id, session);
 
-    return NextResponse.json({ ok: true, session, coach });
+    // Update timestamps + persist in store
+    session.updatedAt = now();
+    store.sessions.set(session.id, session);
+
+    return NextResponse.json({ ok: true, session, coach }, { headers: { "Cache-Control": "no-store" } });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: e?.message || "Unexpected error in /api/coach" },
+      { status: 500 }
+    );
   }
 }
